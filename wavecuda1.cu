@@ -41,6 +41,24 @@ void writeBMP(const int x, const int y, const unsigned char* const bmp, const ch
   fclose(f);
 }
 
+__global__ void buildPicture(int frames, unsigned char *pic) {
+    int row = blockIdx.x;
+    int col = threadIdx.x;
+    int width = blockDim.x;
+
+    for (int frame = 0; frame < frames; frame++) {
+      float fx = col - 1024 / 2;
+      float fy = row - 1024 / 2;
+      float d = sqrtf(fx * fx + fy * fy);
+      unsigned char color = (unsigned char)(160.0f + 127.0f *
+        cos(d / 10.0f - frame / 7.0f) /
+        (d / 50.0f + 1.0f));
+
+      pic[frame * width * width + row * width + col] = (unsigned char)color;    
+    }
+}
+
+
 int main(int argc, char *argv[]) {
 
     // check command line
@@ -61,34 +79,25 @@ int main(int argc, char *argv[]) {
     printf("computing %d frames of %d by %d picture\n", frames, width, width);
 
     // allocate picture array
-    unsigned char *pic = new unsigned char[frames * width * width];
+    int N = frames * width * width;
+    unsigned char *pic = new unsigned char[N];
+    cudaMallocManaged(&pic, N*sizeof(unsigned char));
 
-    // start time
-    timeval start, end;
-    gettimeofday(&start, NULL);
+    // static value for blockSize, so we avoid problems if the width gets high
+    int blockSize = 128;
+    /**
+     * each line has (width / blockSize) blocks. We have 'width' lines. So, 
+     * the total number of blocks is given by: width * (width / blockSize)
+     */
+    int numBlocks = width * (width / blockSize);
 
-    for (int frame = 0; frame < frames; frame++) {
-        for (int row = 0; row < width; row++) {
-            for (int col = 0; col < width; col++) {
-                float fx = col - 1024 / 2;
-                float fy = row - 1024 / 2;
-                float d = sqrtf(fx * fx + fy * fy);
-                unsigned char color = (unsigned char)(160.0f + 127.0f *
-                                                                   cos(d / 10.0f - frame / 7.0f) /
-                                                                   (d / 50.0f + 1.0f));
+    buildPicture<<<numBlocks, blockSize>>>(frames, pic);
 
-                pic[frame * width * width + row * width + col] = (unsigned char)color;
-            }
-        }
-    }
-
-    // end time
-    gettimeofday(&end, NULL);
-    double runtime = end.tv_sec + end.tv_usec / 1000000.0 - start.tv_sec - start.tv_usec / 1000000.0;
-    printf("compute time: %.4f s\n", runtime);
+    // Wait for GPU to finish before accessing on host
+    cudaDeviceSynchronize();
 
     // verify result by writing frames to BMP files
-    if ((width <= 256) && (frames <= 100)) {
+    if ((width <= 256) & (frames <= 100)) {
         for (int frame = 0; frame < frames; frame++) {
             char name[32];
             sprintf(name, "wave%d.bmp", frame + 1000);
@@ -96,6 +105,6 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    delete[] pic;
+    cudaFree(pic);
     return 0;
 }
